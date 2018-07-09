@@ -1,0 +1,1 @@
+﻿select * from rdd.DB_SLEUTEL where DB_SCHEMA_MNEM = 'OTP-PD-RDD-SQS-PUB'
