@@ -1,5 +1,5 @@
 ﻿#
-#
+#	
 
 Import-Module -Name SqlServer
 
@@ -9,10 +9,12 @@ Function FillObject {
 	Param ($Row)
 
 	$object = [PSCustomObject]@{ }
-	foreach ( $prop in $Row.psobject.properties ) {
-		if ( $prop.Name.Equals($prop.Name.ToUpper()) ) {
-			$object | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value
-		}
+
+	$props = $Row | Get-Member -MemberType Property 
+	foreach ( $prop in $props ) {
+		$name = $prop.Name 
+		$value = $Row.($prop.Name)
+		$object | Add-Member -MemberType NoteProperty -Name $name -Value $value
 	}
 	Write-Output $object
 }
@@ -24,34 +26,32 @@ Function CreateTablesHash {
 	$Tables = @{}
 	foreach ($TableRow in $TableRows) {
 		$Table = FillObject -Row $TableRow
-		$Table | Add-Member -MemberType NoteProperty -Name "columns" -Value @{}
-		$Tables[$Table.TABLE_NAME] = $Table
+		$Table | Add-Member -MemberType NoteProperty -Name "__columns" -Value @{}
+		$Tables[$Table.DB_REC_MNEM] = $Table
 	}
 	Write-Output $tables
 }
 
 Function AddColumnsToTheTableshash {
-	Param( $Tables, $ColumnRows )
+	Param ( $Tables, $ColumnRows ) 
 
 	foreach ($ColumnRow in $ColumnRows) {
 		$Column = FillObject -Row $ColumnRow 
-		$Tables[$Column.TABLE_NAME].columns[$Column.COLUMN_NAME] = $Column
+		$Tables[$Column.DB_REC_MNEM].__columns[$Column.ITEM_INT_MNEM] = $Column
 	}
 	Write-Output $Tables
 }
 
 $SqlServerInstance = "SWIFTY\SQLEXPRESS"
-$Database = "DatamodelTest"
-$TableRows = Invoke-Sqlcmd "select * from INFORMATION_SCHEMA.TABLES" -ServerInstance $SqlServerInstance -Database $Database
-$ColumnRows = Invoke-Sqlcmd "select * from INFORMATION_SCHEMA.COLUMNS" -ServerInstance $SqlServerInstance -Database $Database
+$Database = "RDDDB"
+$Schema = "OTP-PD-RDD-SQS-PUB"
+Write-Host "Querying RDD Records for schema $Schema"
+$TableRows = Invoke-Sqlcmd "select * from RDD.DB_RECORD where DB_SCHEMA_MNEM = `'$Schema`'" -ServerInstance $SqlServerInstance -Database $Database
+$ColumnRows = Invoke-Sqlcmd "select * from RDD.DB_REC_OPB where DB_SCHEMA_MNEM = `'$Schema`'" -ServerInstance $SqlServerInstance -Database $Database
+Write-Host "Building RDD Indexes"
 
 $tables = CreateTablesHash -TableRows $TableRows
 $tables = AddColumnsToTheTableshash -Tables $tables -ColumnRows $ColumnRows
 
+Write-Host "Found $($TableRows.count) tables with a total of $($ColumnRows.count) columns"
 
-foreach ( $h in $tables.keys ) {
-	$table = $tables[$h]
-	foreach ( $c in $table.columns.keys ) {
-		Write-Host $table.columns[$c]
-	}
-}
