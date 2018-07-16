@@ -1,10 +1,8 @@
-﻿#
-#
+﻿Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
 Import-Module -Name SqlServer
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
 
 $RddServerInstance = "LOCALHOST\SQLEXPRESS"
 $RddDatabase = "RDDDB"
@@ -168,7 +166,7 @@ Function RddCollectMetaData {
 	)
 
 	$IsoDate = GetIsoDateString $DateStamp
-	Write-Host "Querying RDD Records for schema $Schema"
+	Write-Host "** Querying RDD Records for rdd schema $Schema on date $IsoDate"
 	# ophalen beperkingen, deze zijn vastgelegd in DB_OPB_BEPERK. Indien het veld BEPERK_TEKST leeg is, dan zit de beperking in de tabel DOMEIN_WAARDE
 	# deze is op te halen via DB_OPB_beperk.ITEM_INT_MNEM -> ATTRIBUUT.ATTRIBUUT_MNEM en dan ATTRIBUUT.DOMEIN_ATT -> DOMEIN_WAARDE.DOMEIN_MNEM
 	# DOMEIN_WAARDE bevat dan 1 of meer toegestane waarden.
@@ -228,9 +226,52 @@ Function SqsCreateTablesHash {
 	Write-Output $tables
 }
 
-# returns a RDD formatted typestring for a column 
-# thats has been collected from a physical SQS database
 
+Function SqsCreateIndexesHash {
+	Param (  $IndexRows, $ColumnRows, $Tables )
+
+	$Indexes = @{}
+	foreach ($Row in $IndexRows) {
+		$Index = FillObjectDashNames -Row $Row
+		$Index | Add-Member -MemberType NoteProperty -Name "__columns" -Value @{}
+		$key = $Index.'object-id' + "-" + $Index.'index-id' 
+		$Indexes[$key] = $Index
+
+		$Tables[$Index.'table-name'.replace("_","-")].__indexes[$Index.name] = $Index
+	}
+
+	foreach ( $Row in $ColumnRows) {
+		$Column = FillObjectDashNames -Row $Row
+		$key = $Index.'object-id' + "-" + $Index.'index-id' 
+		$Indexes[$key].__columns[$Column.name.replace("_","-")] = $Column
+	}
+	Write-Output $Indexes
+}
+
+
+Function SqsCollectMetaData {
+	Param(
+		$Schema, $SqlServerInstance, $Database
+	)
+	Write-Host "** Querying Physical Sql Server for SQL schema $Schema"
+	$TableRows = Invoke-Sqlcmd "select * from sys.tables where schema_name(schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
+	$ColumnRows = Invoke-Sqlcmd "SELECT t.name as TABLE_NAME, ty.name as COLUMN_TYPE, c.* FROM sys.columns c JOIN sys.tables t ON (t.object_id = c.object_id) JOIN sys.types ty on ty.system_type_id = c.system_type_id where schema_name(t.schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
+	$IndexRows = Invoke-Sqlcmd "select i.*, t.name as TABLE_NAME from sys.indexes i inner join sys.tables t on i.object_id = t.object_id where schema_name(t.schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
+	$IndexColumnRows =  Invoke-Sqlcmd "select * from RDD.DB_SLEUT_OPB where DB_SCHEMA_MNEM = `'$Schema`' AND (B_DAT_DSO <= '$IsoDate') AND ('$IsoDate' <= E_DAT_DSO) order by DB_SCHEMA_MNEM, DB_REC_MNEM, SOORT_DB_SL, DB_SL_VOLG_NR" -ServerInstance $SqlServerInstance -Database $Database
+
+	Write-Host "Building SQS Tables structure"
+	$Tables = SqsCreateTablesHash -TableRows $TableRows -ColumnRows $ColumnRows
+	Write-Host "Building SQS Indexes structure"
+	$indexes = SqsCreateIndexesHash -IndexRows $IndexRows -ColumnRows $IndexColumnRows -Tables $tables
+
+	Write-Host "Found $($TableRows.count) tables, $($IndexRows.count) indexes"
+	Write-Output  @{ Tables = $Tables; Indexes = $Indexes };
+}
+
+
+
+# returns a typestring (RDD formatted) for a column 
+# thats has been collected from a physical SQS database
 Function GetRddTypeString {
 	Param( $sql_column )
 
@@ -244,8 +285,8 @@ Function GetRddTypeString {
 	$size = $($sql_column.'max-length')
 
 	# nvarchar size is 2x too big, NVARCHAR is always stored in two bytes, 
-	# except when NVARCHAR is -1
-	if ( $base.Equals('NVARCHAR') -and ($size -ge 0)  ) {
+	# except when NVARCHAR is -1. Divide it by 2 to get original declaration size
+	if ( $base.Equals('NVARCHAR') -and ($size -ne -1)  ) {
 		$size = $size / 2
 	} 
 
@@ -271,7 +312,7 @@ Function GetRddTypeString {
 	}
 }
 
-Function CompareColumns {
+Function SqsComparColumns {
 	Param( $rdd_column, $sql_column)
 
 	# compare type of the column
@@ -285,65 +326,71 @@ Function CompareColumns {
 	}
 }
 
-#$rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
+Function SqsCompareTables {
+	Param(
+		$rdd, $sqs
+	)
 
-#$TableRows = Invoke-Sqlcmd "select * from sys.tables where schema_name(schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
-#$ColumnRows = Invoke-Sqlcmd "SELECT t.name as TABLE_NAME, ty.name as COLUMN_TYPE, c.* FROM sys.columns c JOIN sys.tables t ON (t.object_id = c.object_id) JOIN sys.types ty on ty.system_type_id = c.system_type_id where schema_name(t.schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
-#$SqlTables = SqsCreateTablesHash -TableRows $TableRows -ColumnRows $ColumnRows
+	foreach ($rddkey in $rdd.Tables.keys) {
+		$table = $rdd.Tables[$rddkey]
+		$sqlkey = $rddkey
 
-#$sqs = @{ Tables = $SqlTables };
-
-foreach ($rddkey in $rdd.Tables.keys) {
-	$table = $rdd.Tables[$rddkey]
-	$sqlkey = $rddkey
-
-	$found_table = $sqs.Tables.Contains($key)
-	# if not found in SQS and  if RDD has an alias for the table
-	# use that value for the table-name in SQS
-	if ( !$found_table -and ![string]::IsNullOrEmpty($table.DB_REC_ALIAS) ) {
-		$found_table = $sqs.Tables.Contains($table.DB_REC_ALIAS)
-		$sqlkey = $table.DB_REC_ALIAS
-	}
-	if ( $found_table ) {
-		$rdd_columns =  $table.__columns 
-		$sql_columns = $sqs.Tables[$sqlkey].__columns 
-
-		foreach ( $rddcolkey in $rdd_columns.keys ) {
-			$rdd_column = $rdd_columns[$rddcolkey]
-			$sqlcolkey = $rddcolkey
-			$found_col = $sql_columns.Contains($sqlcolkey)
-			# if not found in SQS and  if RDD has an alias for the table
-			# use that value for the column-name in SQS
-			if ( !$found_col -and ![string]::IsNullOrEmpty($table.DB_REC_ALIAS) ) {
-				$found_col = $sqs_columns.Contains($rdd_column.ITEM_INT_ALIAS)
-				$sqlcolkey = $rdd_column.ITEM_INT_ALIAS
-			}
-
-			if ( $found_col ) {
-				$sql_column = $sql_columns[$sqlcolkey]
-				CompareColumns -rdd_column $rdd_column -sql_column $sql_column
-			} else {
-				Write-Host ("Column $colkey of Table $key is in the RDD, but was not found in the physical database")
-			}
+		$found_table = $sqs.Tables.Contains($sqlkey)
+		# if not found in SQS and  if RDD has an alias for the table
+		# use that value for the table-name in SQS
+		if ( !$found_table -and ![string]::IsNullOrEmpty($table.DB_REC_ALIAS) ) {
+			$found_table = $sqs.Tables.Contains($table.DB_REC_ALIAS)
+			$sqlkey = $table.DB_REC_ALIAS
 		}
-	} else {
-		Write-Host ("Table $key is in the RDD, but was not found in the physical database")
+		if ( $found_table ) {
+			$rdd_columns =  $table.__columns 
+			$sql_columns = $sqs.Tables[$sqlkey].__columns 
+
+			foreach ( $rddcolkey in $rdd_columns.keys ) {
+				$rdd_column = $rdd_columns[$rddcolkey]
+				$sqlcolkey = $rddcolkey
+				$found_col = $sql_columns.Contains($sqlcolkey)
+				# if not found in SQS and  if RDD has an alias for the table
+				# use that value for the column-name in SQS
+				if ( !$found_col -and ![string]::IsNullOrEmpty($table.DB_REC_ALIAS) ) {
+					$found_col = $sqs_columns.Contains($rdd_column.ITEM_INT_ALIAS)
+					$sqlcolkey = $rdd_column.ITEM_INT_ALIAS
+				}
+
+				if ( $found_col ) {
+					$sql_column = $sql_columns[$sqlcolkey]
+					SqsComparColumns -rdd_column $rdd_column -sql_column $sql_column
+				} else {
+					Write-Host ("Column $colkey of Table $key is in the RDD, but was not found in the physical database")
+				}
+			}
+		} else {
+			Write-Host ("Table $key is in the RDD, but was not found in the physical database")
+		}
+	}
+
+	foreach ($key in $SqlTables.keys) {
+		$rdd_table =  $SqlTables[$key]
+
+		if ( $rdd.Tables.Contains($key) ) {
+			$rdd_columns =  $rdd.Tables[$key].__columns 
+			$sql_columns = $sqs.Tables[$key].__columns 
+
+			foreach ( $colkey in $sql_columns.keys ) {
+				if ( !$rdd_columns.Contains($colkey) ) {
+					Write-Host ("Column $colkey of Table $key is in the physical database, but was not found in the RDD")
+				}
+			}
+		} else {
+			Write-Host ("Table $key is in the physical database, but was not found in the RDD")
+		}
 	}
 }
 
-foreach ($key in $SqlTables.keys) {
-	$rdd_table =  $SqlTables[$key]
 
-	if ( $rdd.Tables.Contains($key) ) {
-		$rdd_columns =  $rdd.Tables[$key].__columns 
-		$sql_columns = $sqs.Tables[$key].__columns 
+$sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase 
+$rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
 
-		foreach ( $colkey in $sql_columns.keys ) {
-			if ( !$rdd_columns.Contains($colkey) ) {
-				Write-Host ("Column $colkey of Table $key is in the physical database, but was not found in the RDD")
-			}
-		}
-	} else {
-		Write-Host ("Table $key is in the physical database, but was not found in the RDD")
-	}
-}
+
+SqsCompareTables -rdd $rdd -sqs $sqs
+
