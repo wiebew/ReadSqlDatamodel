@@ -3,7 +3,6 @@ $ErrorActionPreference = "Stop"
 
 Import-Module -Name SqlServer
 
-
 $RddServerInstance = "LOCALHOST\SQLEXPRESS"
 $RddDatabase = "RDDDB"
 $RddSchema = "OTP-PD-RDD-SQS"
@@ -59,8 +58,9 @@ Function RddCreateTablesHash {
 	foreach ($TableRow in $TableRows) {
 		$Table = FillObject -Row $TableRow
 		$Table | Add-Member -MemberType NoteProperty -Name "__columns" -Value @{}
-		$Table | Add-Member -MemberType NoteProperty -Name "__indexes" -Value @{}
 		$Table | Add-Member -MemberType NoteProperty -Name "__columnaliases" -Value @{}
+		$Table | Add-Member -MemberType NoteProperty -Name "__indexes" -Value @{}
+		$Table | Add-Member -MemberType NoteProperty -Name "__indexaliases" -Value @{}
 		$Tables[$Table.DB_REC_MNEM] = $Table
 	}
 
@@ -214,8 +214,9 @@ Function SqsCreateTablesHash {
 		$Table = FillObjectDashNames -Row $TableRow
 		$Table | Add-Member -MemberType NoteProperty -Name "__columns" -Value @{}
 		$Table | Add-Member -MemberType NoteProperty -Name "__indexes" -Value @{}
+		$Table.name = $Table.name.replace("_","-")
 		$table_lookup[$Table.'object-id'] = $Table
-		$Tables[$Table.name.replace("_","-")] = $Table
+		$Tables[$Table.name] = $Table
 	}
 
 	foreach ($ColumnRow in $ColumnRows) {
@@ -226,7 +227,6 @@ Function SqsCreateTablesHash {
 	Write-Output $tables
 }
 
-
 Function SqsCreateIndexesHash {
 	Param (  $IndexRows, $ColumnRows, $Tables )
 
@@ -234,20 +234,24 @@ Function SqsCreateIndexesHash {
 	foreach ($Row in $IndexRows) {
 		$Index = FillObjectDashNames -Row $Row
 		$Index | Add-Member -MemberType NoteProperty -Name "__columns" -Value @{}
-		$key = $Index.'object-id' + "-" + $Index.'index-id' 
+		$Index.'TABLE-NAME' = $Index.'TABLE-NAME'.replace("_","-")
+		$Index.'name' = $Index.'name'.replace("_","-")
+		$key = "$($Index.'TABLE-NAME')@$($Index.'name')"
 		$Indexes[$key] = $Index
 
-		$Tables[$Index.'table-name'.replace("_","-")].__indexes[$Index.name] = $Index
+		$Tables[$Index.'table-name'.replace("_","-")].__indexes[$Index.name.replace("_","-")] = $Index
 	}
 
 	foreach ( $Row in $ColumnRows) {
 		$Column = FillObjectDashNames -Row $Row
-		$key = $Index.'object-id' + "-" + $Index.'index-id' 
-		$Indexes[$key].__columns[$Column.name.replace("_","-")] = $Column
+		$Column.'TABLE-NAME' = $Column.'TABLE-NAME'.replace("_","-")
+		$Column.'INDEX-NAME' = $Column.'INDEX-NAME'.replace("_","-")
+		$Column.'COLUMN-NAME' = $Column.'COLUMN-NAME'.replace("_","-")
+		$key = "$($Column.'TABLE-NAME')@$($Column.'INDEX-NAME')"
+		$Indexes[$key].__columns[$Column.'COLUMN-NAME'] = $Column
 	}
 	Write-Output $Indexes
 }
-
 
 Function SqsCollectMetaData {
 	Param(
@@ -257,38 +261,40 @@ Function SqsCollectMetaData {
 	$TableRows = Invoke-Sqlcmd "select * from sys.tables where schema_name(schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
 	$ColumnRows = Invoke-Sqlcmd "SELECT t.name as TABLE_NAME, ty.name as COLUMN_TYPE, c.* FROM sys.columns c JOIN sys.tables t ON (t.object_id = c.object_id) JOIN sys.types ty on ty.system_type_id = c.system_type_id where schema_name(t.schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
 	$IndexRows = Invoke-Sqlcmd "select i.*, t.name as TABLE_NAME from sys.indexes i inner join sys.tables t on i.object_id = t.object_id where schema_name(t.schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
-	$IndexColumnRows =  Invoke-Sqlcmd "select * from RDD.DB_SLEUT_OPB where DB_SCHEMA_MNEM = `'$Schema`' AND (B_DAT_DSO <= '$IsoDate') AND ('$IsoDate' <= E_DAT_DSO) order by DB_SCHEMA_MNEM, DB_REC_MNEM, SOORT_DB_SL, DB_SL_VOLG_NR" -ServerInstance $SqlServerInstance -Database $Database
+	$IndexColumnRows =  Invoke-Sqlcmd "select t.name as TABLE_NAME, i.name as INDEX_NAME, tc.name as COLUMN_NAME, ic.* from sys.index_columns ic inner join sys.indexes i ON (i.object_id = ic.object_id and i.index_id = ic.index_id) inner join sys.tables t on (i.object_id = t.object_id) inner join sys.columns tc on ic.column_id = tc.column_id and ic.object_id = tc.object_id where schema_name(t.schema_id) = '$SqlSchema' order by t.name, i.name, index_column_id" -ServerInstance $SqlServerInstance -Database $Database
+	$FkRows = Invoke-Sqlcmd  "select t.name as TABLE_NAME, fk.* from sys.foreign_keys fk join sys.tables t on (fk.parent_object_id = t.object_id) where schema_name(t.schema_id) = '$SqlSchema'"  -ServerInstance $SqlServerInstance -Database $Database
 
 	Write-Host "Building SQS Tables structure"
 	$Tables = SqsCreateTablesHash -TableRows $TableRows -ColumnRows $ColumnRows
 	Write-Host "Building SQS Indexes structure"
 	$indexes = SqsCreateIndexesHash -IndexRows $IndexRows -ColumnRows $IndexColumnRows -Tables $tables
 
+	## TODO 
+	## $fks = SqsCreateForeignKeysHas  
+
 	Write-Host "Found $($TableRows.count) tables, $($IndexRows.count) indexes"
 	Write-Output  @{ Tables = $Tables; Indexes = $Indexes };
 }
 
-
-
-# returns a typestring (RDD formatted) for a column 
+# returns a typestring (RDD formatted) for a column
 # thats has been collected from a physical SQS database
 Function GetRddTypeString {
 	Param( $sql_column )
 
 	$base = ($sql_column.'COLUMN-TYPE').ToUpper()
 
-	# SYSNAME is alternative name for NVARCHAR (also implies NULL is not allowed) 
+	# SYSNAME is alternative name for NVARCHAR (also implies NULL is not allowed)
 	# rename to NVARCHAR for RDD compatibility
 	if ( $base.Equals('SYSNAME') ) {
 			$base = "NVARCHAR"
-	} 
+	}
 	$size = $($sql_column.'max-length')
 
-	# nvarchar size is 2x too big, NVARCHAR is always stored in two bytes, 
+	# nvarchar size is 2x too big, NVARCHAR is always stored in two bytes,
 	# except when NVARCHAR is -1. Divide it by 2 to get original declaration size
 	if ( $base.Equals('NVARCHAR') -and ($size -ne -1)  ) {
 		$size = $size / 2
-	} 
+	}
 
 	if ( ('VARCHAR', 'NVARCHAR', 'CHARACTER', 'VARCHAR2', 'VARBINARY').Contains( $base ) ) {
 		# append size to type, if size = -1, change name to MAX for RDD compatibility
@@ -305,14 +311,13 @@ Function GetRddTypeString {
 			} else {
 				Write-Output "$base($precision,$scale)".ToUpper()
 			}
-
 		} else {
 			Write-Output $base
 		}
 	}
 }
 
-Function SqsComparColumns {
+Function SqsCompareColumns {
 	Param( $rdd_column, $sql_column)
 
 	# compare type of the column
@@ -326,58 +331,74 @@ Function SqsComparColumns {
 	}
 }
 
+# searches for an item in the hash on the $key, if not found
+# and $aliaskey is not empty then it searches for the item using the alias
+# return null if not gounf
+Function FindItemWithAlias {
+	Param ($hash, $key, $aliaskey)
+
+	if ( $hash.Contains($key) ) {
+		Write-Output $hash[$key]
+	} else {
+		if ( ![string]::IsNullOrEmpty($aliaskey) -and $hash.Contains($aliaskey) ) {
+			Write-Output $hash[$aliaskey]
+		} else {
+			Write-Output $null
+		}
+	}
+
+}
+
+# searches in the two hashes for an item
+# this is used if we search from the physical database back to rdd
+# then we need to look in two indexes
+Function FindItemInTwoHashes {
+	Param ($hash1, $hash2, $key)
+
+	if ( $hash1.Contains($key) ) {
+		Write-Output $hash1[$key]
+	} else {
+		if ( $hash2.Contains($key) ) {
+			Write-Output $hash2[$key]
+		} else {
+			Write-Output $null
+		}
+	}
+}
+
 Function SqsCompareTables {
 	Param(
 		$rdd, $sqs
 	)
 
 	foreach ($rddkey in $rdd.Tables.keys) {
-		$table = $rdd.Tables[$rddkey]
-		$sqlkey = $rddkey
-
-		$found_table = $sqs.Tables.Contains($sqlkey)
-		# if not found in SQS and  if RDD has an alias for the table
-		# use that value for the table-name in SQS
-		if ( !$found_table -and ![string]::IsNullOrEmpty($table.DB_REC_ALIAS) ) {
-			$found_table = $sqs.Tables.Contains($table.DB_REC_ALIAS)
-			$sqlkey = $table.DB_REC_ALIAS
-		}
-		if ( $found_table ) {
-			$rdd_columns =  $table.__columns 
-			$sql_columns = $sqs.Tables[$sqlkey].__columns 
+		$rddtable = $rdd.Tables[$rddkey]
+		$sqstable = FindItemWithAlias -hash $sqs.Tables -key $rddkey -aliaskey $rddtable.DB_REC_ALIAS
+		if ( ![string]::IsNullOrEmpty($sqstable) ) {
+			$rdd_columns = $rddtable.__columns
+			$sqs_columns = $sqstable.__columns
 
 			foreach ( $rddcolkey in $rdd_columns.keys ) {
 				$rdd_column = $rdd_columns[$rddcolkey]
-				$sqlcolkey = $rddcolkey
-				$found_col = $sql_columns.Contains($sqlcolkey)
-				# if not found in SQS and  if RDD has an alias for the table
-				# use that value for the column-name in SQS
-				if ( !$found_col -and ![string]::IsNullOrEmpty($table.DB_REC_ALIAS) ) {
-					$found_col = $sqs_columns.Contains($rdd_column.ITEM_INT_ALIAS)
-					$sqlcolkey = $rdd_column.ITEM_INT_ALIAS
-				}
+				$sql_column = FindItemWithAlias -hash $sqs_columns -key $rddcolkey -aliaskey $rdd_column.ITEM_INT_ALIAS
 
-				if ( $found_col ) {
-					$sql_column = $sql_columns[$sqlcolkey]
-					SqsComparColumns -rdd_column $rdd_column -sql_column $sql_column
+				if ( ![string]::IsNullOrEmpty($sql_column) ) {
+					SqsCompareColumns -rdd_column $rdd_column -sql_column $sql_column
 				} else {
-					Write-Host ("Column $colkey of Table $key is in the RDD, but was not found in the physical database")
+					Write-Host ("Column $($rdd_column.'ITEM_INT_MNEM') of Table $($rddtable.'DB_REC_MNEM') is in the RDD, but was not found in the physical database")
 				}
 			}
 		} else {
-			Write-Host ("Table $key is in the RDD, but was not found in the physical database")
+			Write-Host ("Table $($rddtable.'DB_REC_MNEM') is in the RDD, but was not found in the physical database")
 		}
 	}
 
-	foreach ($key in $SqlTables.keys) {
-		$rdd_table =  $SqlTables[$key]
-
-		if ( $rdd.Tables.Contains($key) ) {
-			$rdd_columns =  $rdd.Tables[$key].__columns 
-			$sql_columns = $sqs.Tables[$key].__columns 
-
-			foreach ( $colkey in $sql_columns.keys ) {
-				if ( !$rdd_columns.Contains($colkey) ) {
+	# search for tables and columns in the database that are not in the RDD
+	foreach ($key in $Sqs.Tables.keys) {
+		$rddtable = FindItemInTwoHashes -hash1 $rdd.Tables -hash2 $rdd.TableAliases -key $key 		
+		if ( ![string]::IsNullOrEmpty($rddtable) ) {
+			foreach ( $colkey in $sqs.Tables[$key].__columns.keys ) {
+				if ( [string]::IsNullOrEmpty( (FindItemInTwoHashes -hash1 $rddtable.__columns -hash2 $rddtable.__columnaliases -key $colkey ) ) ) {
 					Write-Host ("Column $colkey of Table $key is in the physical database, but was not found in the RDD")
 				}
 			}
@@ -387,10 +408,41 @@ Function SqsCompareTables {
 	}
 }
 
+Function SqsCompareIndexes {
+	Param( $rdd, $sqs )
 
-$sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase 
+	# PK, CK en IX  wordt gevonden in de sys.indexes
+	# CK is index met unique contraints, IX is alleen index
+	# FK komt sys.foreign_keys
+	# BK alleen gebruikt bij Oracle database
+	# LK wordt gebruikt in Winframe, nog geen idee wat dat type is.
+
+
+	foreach ( $rddkey in $rdd.Tables.keys ) {
+		$rddtable = $rdd.Tables[$rddkey]
+		$sqstable = FindItemWithAlias -hash $sqs.Tables -key $rddkey -aliaskey $rddtable.DB_REC_ALIAS
+		if ( ![string]::IsNullOrEmpty($sqstable) ) {
+			foreach ( $indexkey in $rddTable.__Indexes.keys )
+			{
+				$rddIndex = $rddTable.__Indexes[$indexkey]
+				if ( !('FK', 'PK', 'LK','BX').Contains($rddIndex.'SOORT_DB_SL') ) {
+					# rdd has no aliases yet for indexes, if rdd gets aliases for indexes replace the $null with the value of the alias
+					$sqsIndex = FindItemWithAlias -hash $sqstable.__indexes -key $indexkey -aliaskey $null
+					if ( [string]::IsNullOrEmpty( $rddIndex ) ) {
+						Write-Host "Index $($indexkey) on table $($rddtable.'DB_REC_MNEM') is in the RDD, but was not found in the physical database"
+					}
+				} else {
+					Write-Host "The RDD Indextype $($rddIndex.'SOORT_DB_SL') for index $indexkey on table $($rddtable.'DB_REC_MNEM') is not (yet) supported by this script"
+				}
+			}
+		} else {
+			# table not found -> ignore, checked and reported in Compare tables
+		}
+	}
+}
+
+$sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase
 $rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
 
-
 SqsCompareTables -rdd $rdd -sqs $sqs
-
+SqsCompareIndexes -rdd $rdd -sqs $sqs
