@@ -256,7 +256,7 @@ Function SqsCreateIndexesHash {
 
 Function SqsCreateForeignKeysHash {
 	Param ($FkRows, $FkColumnRows )
-	
+
 	$Fks = @{}
 	foreach ($Row in $FkRows) {
 		$Index = FillObjectDashNames -Row $Row
@@ -292,10 +292,10 @@ Function SqsCollectMetaData {
 	$IndexRows = Invoke-Sqlcmd "select i.*, t.name as TABLE_NAME from sys.indexes i inner join sys.tables t on i.object_id = t.object_id where schema_name(t.schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
 	$IndexColumnRows =  Invoke-Sqlcmd "select t.name as TABLE_NAME, i.name as INDEX_NAME, tc.name as COLUMN_NAME, ic.* from sys.index_columns ic inner join sys.indexes i ON (i.object_id = ic.object_id and i.index_id = ic.index_id) inner join sys.tables t on (i.object_id = t.object_id) inner join sys.columns tc on ic.column_id = tc.column_id and ic.object_id = tc.object_id where schema_name(t.schema_id) = '$SqlSchema' order by t.name, i.name, index_column_id" -ServerInstance $SqlServerInstance -Database $Database
 	$FkRows = Invoke-Sqlcmd  "select t.name as TABLE_NAME, fk.name as FOREIGN_KEY_NAME, fk.* from sys.foreign_keys fk join sys.tables t on (fk.parent_object_id = t.object_id) where schema_name(t.schema_id) = '$SqlSchema'"  -ServerInstance $SqlServerInstance -Database $Database
-	$FkColumnRows = Invoke-Sqlcmd  "SELECT t.name AS TABLE_NAME, f.name AS FOREIGN_KEY_NAME, COL_NAME(fc.parent_object_id, fc.parent_column_id) AS CONSTRAINT_COLUMN_NAME,  
+	$FkColumnRows = Invoke-Sqlcmd  "SELECT t.name AS TABLE_NAME, f.name AS FOREIGN_KEY_NAME, COL_NAME(fc.parent_object_id, fc.parent_column_id) AS CONSTRAINT_COLUMN_NAME,
 									OBJECT_NAME (f.referenced_object_id) AS REFERENCED_TABLE, COL_NAME(fc.referenced_object_id, fc.referenced_column_id) AS REFERENCED_COLUMN_NAME, fc.*
-									FROM sys.foreign_keys AS f  
-									INNER JOIN sys.foreign_key_columns AS fc ON f.object_id = fc.constraint_object_id 
+									FROM sys.foreign_keys AS f
+									INNER JOIN sys.foreign_key_columns AS fc ON f.object_id = fc.constraint_object_id
 									INNER JOIN sys.tables as t on f.parent_object_id = t.object_id
 									WHERE schema_name(t.schema_id) = '$SqlSchema' ORDER BY t.name, f.name, fc.constraint_column_id"  -ServerInstance $SqlServerInstance -Database $Database
 
@@ -445,15 +445,31 @@ Function SqsCompareTables {
 Function SqsCompareNormalIndexes {
 	Param ( $rddIndex, $sqsIndex )
 
-
+	switch ( $rddIndex.'SOORT_DB_SL' ) {
+		'IX' {
+			if ( $sqsIndex.'is-unique' ) {
+				Write-Host "$($sqsindex.'name') on table $($sqsindex.'TABLE-NAME') should not be an unique index in the physical databse"
+			}
+			break
+		}
+		'CK' {
+			if ( !$sqsIndex.'is-unique' ) {
+				Write-Host "$($sqsindex.'name') on table $($sqsindex.'TABLE-NAME') should be an unique index in the physical databse"
+			}
+			break
+		}
+		'PK' {
+			if ( !$sqsIndex.'is-primary-key' ) {
+				Write-Host "$($sqsindex.'name') on table $($sqsindex.'TABLE-NAME') should be a primary key in the physical databse"
+			}
+			break
+		}
+	}
 }
 
 Function SqsCompareFkIndexes {
 	Param ( $rddIndex, $sqsIndex )
-
-
 }
-
 
 Function SqsCompareIndexes {
 	Param( $rdd, $sqs )
@@ -498,6 +514,22 @@ Function SqsCompareIndexes {
 					default {
 						Write-Host "The RDD Indextype $($rddIndex.'SOORT_DB_SL') for index $indexkey on table $($rddtable.'DB_REC_MNEM') is not supported by this script"
 					}
+				}
+			}
+		} else {
+			# table not found -> ignore. This is already detected and reported in Compare tables
+		}
+	}
+
+	foreach ( $sqskey in $sqs.Tables.keys ) {
+		$sqstable = $sqs.Tables[$sqskey]
+
+		$rddtable = FindItemInTwoHashes -hash1 $rdd.Tables -hash2 $rdd.TableAliases -key $sqskey
+		if ( ![string]::IsNullOrEmpty($rddtable) ) {
+			foreach ( $indexkey in $sqstable.__Indexes.keys ) {
+				if ( !($rddtable.__indexes.Contains($indexkey) ) ) {
+					$index = $sqstable.__Indexes[$indexkey]
+					Write-Host "Index $indexkey on table $($rddtable.'DB_REC_MNEM') with columns [$($index.__columns.keys -join ", ")] was found in the physical database but not in the RDD"
 				}
 			}
 		} else {
