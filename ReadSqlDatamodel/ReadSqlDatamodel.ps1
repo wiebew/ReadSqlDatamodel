@@ -3,6 +3,11 @@ $ErrorActionPreference = "Stop"
 
 Import-Module -Name SqlServer
 
+
+# declared as global so we can inspect the data later after running functions on the commandline
+$global:rdd = $null
+$global:sqs = $null
+
 # this function copies the properties of the Row to a PSCustomObject and returns the PSCustomObject
 # thus returning a clean object with name,value pairs for each field in the datarow
 Function FillObject {
@@ -80,6 +85,20 @@ Function RddCreateTableAliasesHash {
 	}
 	Write-Output $Aliases
 }
+
+Function RddCreateIndexAliasesHash {
+	Param ($indexes)
+
+	$Aliases = @{}
+	foreach ( $key in $indexes.Keys ) {
+		$index = $indexes[$key]
+		if ( ![string]::IsNullOrEmpty($index.DB_SLEUT_ALIAS) ) {
+			$Aliases[$index.DB_SLEUT_ALIAS] = $index
+		}
+	}
+	Write-Output $Aliases
+}
+
 
 Function RddCreateIndexeshash {
 	Param (  $IndexRows, $ColumnRows, $Tables )
@@ -188,12 +207,13 @@ Function RddCollectMetaData {
 	$table_aliases = RddCreateTableAliasesHash -tables $tables
 	Write-Host "Building RDD Indexes structure"
 	$indexes = RddCreateIndexesHash -IndexRows $IndexRows -ColumnRows $IndexColumnRows -Tables $tables
+	$index_aliases = RddCreateIndexAliasesHash -indexes $indexes
 	Write-Host "Building RDD Toevoegingen structure"
 	$toevoegingen = RddCreateToevoegingenList -ToevoegingRows $ToevoegingRows
 
-	Write-Host "Found $($beperkingen.count) beperkingen, $($TableRows.count) tables, $($IndexRows.count) indexes, $($ToevoegingRows.count) toevoegingen"
+	Write-Host "Found $($beperkingen.count) beperkingen, $($TableRows.count) tables, $($IndexRows.count) indexes, 0 toevoegingen"
 
-	Write-Output @{ Tables = $tables; TableAliases = $table_aliases; Indexes = $indexes; Toevoegingen = $toevoegingen; Beperkingen = $beperkingen; Attributen = $attributenUsed; Domeimen = $domeinenUsed }
+	Write-Output @{ Tables = $tables; TableAliases = $table_aliases; Indexes = $indexes; IndexAliases = $index_aliases; Toevoegingen = $toevoegingen; Beperkingen = $beperkingen; Attributen = $attributenUsed; Domeimen = $domeinenUsed }
 }
 
 Function SqsCreateTablesHash {
@@ -316,6 +336,10 @@ Function GetRddTypeString {
 	}
 	$size = $($sql_column.'max-length')
 
+	if ( $base.Equals('INT') -and $sql_column.'is-identity') {
+		$base = "INT IDENTITY"
+	}
+	
 	# nvarchar size is 2x too big, NVARCHAR is always stored in two bytes,
 	# except when NVARCHAR is -1. Divide it by 2 to get original declaration size
 	if ( $base.Equals('NVARCHAR') -and ($size -ne -1)  ) {
@@ -434,6 +458,12 @@ Function SqsCompareTables {
 	}
 }
 
+Function SortedObjectsHash {
+	Param ( $hash, $sort_attribute)
+
+	Write-Output $hash.__columns.GetEnumerator() | Sort-Object { $_.Value.$sort_attribute }
+}
+
 Function SqsCompareNormalIndex {
 	Param ( $rddIndex, $sqsIndex )
 
@@ -457,11 +487,17 @@ Function SqsCompareNormalIndex {
 			break
 		}
 	}
+
+	$rdd_columns = SortedObjectsHash -hash $rddIndex -sort_attribute 'ITEM_VNR_SLEUT'
+	$sqs_columns = SortedObjectsHash -hash $sqsIndex -sort_attribute 'key-ordinal'
+
+	#comapre the index columns
 }
 
 Function SqsCompareFkIndex {
 	Param ( $rddIndex, $sqsIndex )
 }
+
 
 Function SqsCompareIndexes {
 	Param( $rdd, $sqs )
@@ -482,20 +518,20 @@ Function SqsCompareIndexes {
 
 				switch ( $rddIndex.'SOORT_DB_SL' ) {
 					{ ('IX', 'CK', 'PK').Contains($_) } {
-						$sqsIndex = FindItemWithAlias -hash $sqstable.__indexes -key $indexkey -aliaskey $null
+						$sqsIndex = FindItemWithAlias -hash $sqstable.__indexes -key $indexkey -aliaskey $rddIndex.'DB_SLEUT_ALIAS'
 						if ( ![string]::IsNullOrEmpty( $sqsIndex ) ) {
 							SqsCompareNormalIndex -rddIndex $rddIndex -sqsIndex $sqsIndex
 						} else {
-							Write-Host "Index $($indexkey) on table $($rddtable.'DB_REC_MNEM') is in the RDD, but was not found in the physical database"
+							Write-Host "Index $($indexkey) on table $($rddtable.'DB_REC_MNEM') with columns [$($rddIndex.__columns.keys -join ", ")] is in the RDD, but was not found in the physical database"
 						}
 						break
 					}
 					{ ('FK').Contains($_) } {
-						$sqsIndex = FindItemWithAlias -hash $sqstable.__foreign_keys -key $indexkey -aliaskey $null
+						$sqsIndex = FindItemWithAlias -hash $sqstable.__foreign_keys -key $indexkey -aliaskey $rddIndex.'DB_SLEUT_ALIAS'
 						if ( ![string]::IsNullOrEmpty( $sqsIndex ) ) {
-							SqsCompareFkIndexes -rddIndex $rddIndex -sqsIndex $sqsIndex
+							SqsCompareFkIndex -rddIndex $rddIndex -sqsIndex $sqsIndex
 						} else {
-							Write-Host "Foreign key $($indexkey) on table $($rddtable.'DB_REC_MNEM') is in the RDD, but was not found in the physical database"
+							Write-Host "Foreign key $($indexkey) on table $($rddtable.'DB_REC_MNEM') with columns [$($rddIndex.__columns.keys -join ", ")] is in the RDD, but was not found in the physical database"
 						}
 						break
 					}
@@ -543,12 +579,13 @@ Function CompareSqsWithRddSchema {
 
 	Write-Host "Comparing RDD in $RddServerInstance, Database $RddDatabase, RDD Schema $RddSchema"
 	Write-Host "With SQL Server $SqlServerInstance, Database $SqlDatabase, SQL Schema $SqlSchema"
-	$sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase
-	$rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
+	$global:sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase
+	$global:rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
 
-	SqsCompareTables -rdd $rdd -sqs $sqs
-	SqsCompareIndexes -rdd $rdd -sqs $sqs
+	SqsCompareTables -rdd $global:rdd -sqs $global:sqs
+	SqsCompareIndexes -rdd $global:rdd -sqs $global:sqs
 }
 
 
 CompareSqsWithRddSchema -RddServerInstance "LOCALHOST\SQLEXPRESS" -RddDatabase "RDDDB" -RddSchema "OTP-PD-RDD-SQS" -SqlServerInstance "LOCALHOST\SQLEXPRESS" -SqlDatabase "RDDDB" -SqlSchema "RDD"
+#CompareSqsWithRddSchema -RddServerInstance "LOCALHOST\SQLEXPRESS" -RddDatabase "RDDDB" -RddSchema "OTP-ON-BKR-WFR" -SqlServerInstance "LOCALHOST\SQLEXPRESS" -SqlDatabase "RDDDB" -SqlSchema "RDD"
