@@ -3,14 +3,6 @@ $ErrorActionPreference = "Stop"
 
 Import-Module -Name SqlServer
 
-$RddServerInstance = "LOCALHOST\SQLEXPRESS"
-$RddDatabase = "RDDDB"
-$RddSchema = "OTP-PD-RDD-SQS"
-
-$SqlServerInstance = "LOCALHOST\SQLEXPRESS"
-$SqlDatabase = "RDDDB"
-$SqlSchema = "RDD"
-
 # this function copies the properties of the Row to a PSCustomObject and returns the PSCustomObject
 # thus returning a clean object with name,value pairs for each field in the datarow
 Function FillObject {
@@ -361,7 +353,7 @@ Function SqsCompareColumns {
 	}
 	# compare non-nullable
 	if (($rdd_column.'DATA_ITEM_AANW' -eq "J") -ne !($sql_column.'is-nullable')) {
-		Write-Host "$($sql_column.'TABLE-NAME').$($sql_column.name) Different non nullable setting: $($rdd_column.'DATA_ITEM_AANW' -ne "J") expected, found is_nullable = $(($sql_column.'is-nullable')) in the database"
+		Write-Host "$($sql_column.'TABLE-NAME').$($sql_column.name) Different non nullable setting: DATA_ITEM_AANW=$($rdd_column.'DATA_ITEM_AANW') expected, found is_nullable = $(($sql_column.'is-nullable')) in the database"
 	}
 }
 
@@ -442,7 +434,7 @@ Function SqsCompareTables {
 	}
 }
 
-Function SqsCompareNormalIndexes {
+Function SqsCompareNormalIndex {
 	Param ( $rddIndex, $sqsIndex )
 
 	switch ( $rddIndex.'SOORT_DB_SL' ) {
@@ -467,7 +459,7 @@ Function SqsCompareNormalIndexes {
 	}
 }
 
-Function SqsCompareFkIndexes {
+Function SqsCompareFkIndex {
 	Param ( $rddIndex, $sqsIndex )
 }
 
@@ -492,7 +484,7 @@ Function SqsCompareIndexes {
 					{ ('IX', 'CK', 'PK').Contains($_) } {
 						$sqsIndex = FindItemWithAlias -hash $sqstable.__indexes -key $indexkey -aliaskey $null
 						if ( ![string]::IsNullOrEmpty( $sqsIndex ) ) {
-							SqsCompareNormalIndexes -rddIndex $rddIndex -sqsIndex $sqsIndex
+							SqsCompareNormalIndex -rddIndex $rddIndex -sqsIndex $sqsIndex
 						} else {
 							Write-Host "Index $($indexkey) on table $($rddtable.'DB_REC_MNEM') is in the RDD, but was not found in the physical database"
 						}
@@ -538,8 +530,25 @@ Function SqsCompareIndexes {
 	}
 }
 
-#$sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase
-#$rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
+Function CompareSqsWithRddSchema {
+	Param (
+	$RddServerInstance, 
+	$RddDatabase,
+	$RddSchema,
+	$SqlServerInstance,
+	$SqlDatabase,
+	$SqlSchema
+	)
 
-SqsCompareTables -rdd $rdd -sqs $sqs
-SqsCompareIndexes -rdd $rdd -sqs $sqs
+
+	Write-Host "Comparing RDD in $RddServerInstance, Database $RddDatabase, RDD Schema $RddSchema"
+	Write-Host "With SQL Server $SqlServerInstance, Database $SqlDatabase, SQL Schema $SqlSchema"
+	$sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase
+	$rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
+
+	SqsCompareTables -rdd $rdd -sqs $sqs
+	SqsCompareIndexes -rdd $rdd -sqs $sqs
+}
+
+
+CompareSqsWithRddSchema -RddServerInstance "LOCALHOST\SQLEXPRESS" -RddDatabase "RDDDB" -RddSchema "OTP-PD-RDD-SQS" -SqlServerInstance "LOCALHOST\SQLEXPRESS" -SqlDatabase "RDDDB" -SqlSchema "RDD"
