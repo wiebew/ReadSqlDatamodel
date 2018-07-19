@@ -1,4 +1,21 @@
-﻿Set-StrictMode -Version Latest
+﻿##### TODO (Kwlaitatief)
+##### - Ombouwen naar cmdlets
+##### - Unit testen
+##### TODO (Functioneel)
+##### Feature 1, sluitende administratie RDD met fysieke databases hierdoor heb je de preconditie datde databases identiek zijn en de startsituatie over al gelijk
+##### - Vergelijken van Foreignkey indexes, function is er al maar de inhoud nog, zelfde check als voor normale index, maar kijken of de refrenced table and columns ook gelijk zijn.
+##### - Vergelijken van constraint op kolommen, deze staan al geclusterd in de $Rdd.Beperkingen hash
+##### - Write-Host vervangen door een json construct waardoor er een machine leesbare delta uit deze stap komt
+#####   Deze delta kan je dan inlezen om rapport mee te maken of Scripts mee uit voeren
+##### Feature 2, Detecteren van changes in RDD en het automatisch kunnen updaten van een database
+##### - maken script met als resultaar een json oid die deze verschillen (delta) bevat (dus toevoegen van een extra kolom op een winframe database, zie je terug als een item in de json)
+##### - maken van een interface waardoor er migrations obv bovenstaande delta komen die gensapt worden door het .Net core EF (idee Robert)
+##### - Release definitie maken waarmee changes op databases via Rel Mgr uitgerold kunnen worden.
+
+
+
+
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 Import-Module -Name SqlServer
