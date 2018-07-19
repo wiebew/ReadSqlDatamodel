@@ -26,13 +26,6 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
-    <Content Include="SQLQuery1.sql" />
-    <Content Include="SQLQuery2.sql" />
-    <Content Include="SQLQuery3.sql" />
-    <Content Include="SQLQuery4.sql" />
-    <Content Include="SQLQuery6.sql" />
-  </ItemGroup>
-  <ItemGroup>
     <Compile Include="ReadSqlDatamodel.ps1" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />

@@ -5,8 +5,8 @@ Import-Module -Name SqlServer
 
 
 # declared as global so we can inspect the data later after running functions on the commandline
-$global:rdd = $null
-$global:sqs = $null
+#$global:rdd = $null
+#$global:sqs = $null
 
 # this function copies the properties of the Row to a PSCustomObject and returns the PSCustomObject
 # thus returning a clean object with name,value pairs for each field in the datarow
@@ -458,12 +458,6 @@ Function SqsCompareTables {
 	}
 }
 
-Function SortedObjectsHash {
-	Param ( $hash, $sort_attribute)
-
-	Write-Output $hash.__columns.GetEnumerator() | Sort-Object { $_.Value.$sort_attribute }
-}
-
 Function SqsCompareNormalIndex {
 	Param ( $rddIndex, $sqsIndex )
 
@@ -488,10 +482,35 @@ Function SqsCompareNormalIndex {
 		}
 	}
 
-	$rdd_columns = SortedObjectsHash -hash $rddIndex -sort_attribute 'ITEM_VNR_SLEUT'
-	$sqs_columns = SortedObjectsHash -hash $sqsIndex -sort_attribute 'key-ordinal'
+	# create arrays with columns sorted in the order specifed by the index
+	# using the @{} ensures that when no columns are found an empty array is returned (damn you powershell)
+	# the getenumerator converts the hashes to on object where there the actual object 
+	# in the hash is put behind a property Value
+	# so accessing member of the object is done by $array[0].Value.Yourproperty
+	$sqs_columns = @($sqsIndex.__columns.GetEnumerator() | Sort-Object { $_.Value.'key-ordinal' })
+	$rdd_columns = @($rddIndex.__columns.GetEnumerator() | Sort-Object { $_.Value.'ITEM_VNR_SLEUT' })
 
-	#comapre the index columns
+	$max = ($sqs_columns.count , $rdd_columns.count | Measure-Object -Maximum).Maximum
+
+	for ( $i = 0; $i -lt $max; $i++ ) {
+		if ( $i -ge $sqs_columns.count ) {
+			# verschil aantal kolommen, rdd heeft er meer dan sqs
+			Write-Host "Column $($rdd_columns[$i].Value.'ITEM_INT_MNEM') of index $($rddIndex.'DB_SLEUT_NAAM') of table $($rddIndex[$i].'DB_REC_MNEM') is in the RDD but missing in the Physical database"
+		} else {
+			if ( $i -ge $rdd_columns.count ) {
+				# verschil aantal kolommen, sqs heeft er meer dan rdd
+				Write-Host "Column $($sqs_columns[$i].Value.'COLUMN-NAME') of index $($sqs_columns[$i].Value.'INDEX-NAME') of table $($sqs_columns[$i].Value.'TABLE-NAME') is in the Physical database but missing in the RDD"
+			} else {
+				$rdd_column = $rdd_columns[$i]
+				$sqs_column = $sqs_columns[$i]
+				# vergelijk de twee kolommen met elkaar
+				if ( $rdd_column.Value.'ITEM_INT_MNEM'.Equals($sqs_column.Value.'COLUMN-NAME') ) {
+				} else {
+					Write-Host "Column $($sqs_column.Value.'COLUMN-NAME') of index $($sqs_column.Value.'INDEX-NAME') of table $($sqs_column.Value.'TABLE-NAME') in the Physical database differs from the Column $($rdd_column.Value.'ITEM_INT_MNEM') in the RDD"
+				}
+			}
+		}
+	}
 }
 
 Function SqsCompareFkIndex {
@@ -503,7 +522,9 @@ Function SqsCompareIndexes {
 	Param( $rdd, $sqs )
 
 	# PK, CK en IX  wordt gevonden in de sys.indexes
-	# CK is index met unique contraints, IX is alleen index
+	# PK (Primary KEY)
+	# CK is index met unique contraints (CANDIDATE KEY), 
+	# IX is alleen index
 	# FK komt sys.foreign_keys
 	# BK alleen gebruikt bij Oracle database
 	# LK wordt gebruikt in Winframe, nog geen idee wat dat type is.
