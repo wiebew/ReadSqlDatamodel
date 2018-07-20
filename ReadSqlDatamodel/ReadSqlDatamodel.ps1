@@ -3,8 +3,7 @@
 ##### - Unit testen
 ##### TODO (Functioneel)
 ##### Feature 1, sluitende administratie RDD met fysieke databases hierdoor heb je de preconditie datde databases identiek zijn en de startsituatie over al gelijk
-##### - Vergelijken van Foreignkey indexes, function is er al maar de inhoud nog, zelfde check als voor normale index, maar kijken of de refrenced table and columns ook gelijk zijn.
-##### - Vergelijken van constraint op kolommen, deze staan al geclusterd in de $Rdd.Beperkingen hash
+##### - Met DBA uitzoeken wanneer je nu wel of niet een IS NULL moet teovoegen aan de constraint. is nu niet consistent te krijgen.
 ##### - Write-Host vervangen door een json construct waardoor er een machine leesbare delta uit deze stap komt
 #####   Deze delta kan je dan inlezen om rapport mee te maken of Scripts mee uit voeren
 ##### Feature 2, Detecteren van changes in RDD en het automatisch kunnen updaten van een database
@@ -12,14 +11,10 @@
 ##### - maken van een interface waardoor er migrations obv bovenstaande delta komen die gensapt worden door het .Net core EF (idee Robert)
 ##### - Release definitie maken waarmee changes op databases via Rel Mgr uitgerold kunnen worden.
 
-
-
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 Import-Module -Name SqlServer
-
 
 # declared as global so we can inspect the data later after running functions on the commandline
 #$global:rdd = $null
@@ -116,7 +111,6 @@ Function RddCreateIndexAliasesHash {
 	Write-Output $Aliases
 }
 
-
 Function RddCreateIndexeshash {
 	Param (  $IndexRows, $ColumnRows, $Tables )
 
@@ -170,7 +164,7 @@ Function RddCreateBeperkingenHash {
 	$Beperkingen = @{}
 	foreach ($BeperkingRow in $BeperkingRows ) {
 		$Beperking = FillObject -Row $BeperkingRow
-		$Beperkingen[$Beperking.ITEM_INT_MNEM] = $Beperking
+		$Beperkingen["$($Beperking.DB_REC_MNEM)@$($Beperking.ITEM_INT_MNEM)"] = $Beperking
 	}
 
 	Write-Output $Beperkingen
@@ -199,9 +193,9 @@ Function RddCollectMetaData {
 	# deze is op te halen via DB_OPB_beperk.ITEM_INT_MNEM -> ATTRIBUUT.ATTRIBUUT_MNEM en dan ATTRIBUUT.DOMEIN_ATT -> DOMEIN_WAARDE.DOMEIN_MNEM
 	# DOMEIN_WAARDE bevat dan 1 of meer toegestane waarden.
 	# we gebruiken joins op attribuut en domein_waarde queries omdat deze tabellen erg groot zijn en een relatief klein aantal records gebruikt wordt (bijv de RDD definitie gebruikt slechts 17 vd ca 21.000 records)
-	$BeperkingRows = Invoke-Sqlcmd "select * from RDD.DB_OPB_BEPERK where DB_SCHEMA_MNEM = `'$Schema`' order by DB_SCHEMA_MNEM, DB_REC_MNEM, ITEM_INT_MNEM, BEPERK_IDENT" -ServerInstance $SqlServerInstance -Database $Database
-	$AttribuutSubsetRows =  Invoke-Sqlcmd "select DISTINCT A.* from RDD.ATTRIBUUT as A join RDD.DB_OPB_beperk AS B ON (A.ATTRIBUUT_MNEM = B.ITEM_INT_MNEM) where B.DB_SCHEMA_MNEM = `'$Schema`' order by ATTRIBUUT_MNEM" -ServerInstance $SqlServerInstance -Database $Database
-	$DomeinWaardeSubsetRows =  Invoke-Sqlcmd "select distinct D.* from RDD.DOMEIN_WAARDE as D join RDD.ATTRIBUUT as A ON (D.DOMEIN_MNEM = A.DOMEIN_ATT ) join RDD.DB_OPB_beperk AS B ON (A.ATTRIBUUT_MNEM = B.ITEM_INT_MNEM) where B.DB_SCHEMA_MNEM = `'$Schema`' order by D.DOMEIN_MNEM, D.DOM_WAARDE_VNR" -ServerInstance $SqlServerInstance -Database $Database
+	$BeperkingRows = Invoke-Sqlcmd "select * from RDD.DB_OPB_BEPERK where DB_SCHEMA_MNEM = '$Schema' AND (B_DAT_DOB <= '$IsoDate') AND ('$IsoDate' <= E_DAT_DOB) order by DB_SCHEMA_MNEM, DB_REC_MNEM, ITEM_INT_MNEM, BEPERK_IDENT" -ServerInstance $SqlServerInstance -Database $Database
+	$AttribuutSubsetRows =  Invoke-Sqlcmd "select DISTINCT A.* from RDD.ATTRIBUUT as A join RDD.DB_OPB_beperk AS B ON (A.ATTRIBUUT_MNEM = B.ITEM_INT_MNEM) where B.DB_SCHEMA_MNEM = '$Schema' AND (B_DAT_ATT <= '$IsoDate') AND ('$IsoDate' <= E_DAT_ATT) order by ATTRIBUUT_MNEM" -ServerInstance $SqlServerInstance -Database $Database
+	$DomeinWaardeSubsetRows =  Invoke-Sqlcmd "select distinct D.* from RDD.DOMEIN_WAARDE as D join RDD.ATTRIBUUT as A ON (D.DOMEIN_MNEM = A.DOMEIN_ATT ) join RDD.DB_OPB_beperk AS B ON (A.ATTRIBUUT_MNEM = B.ITEM_INT_MNEM) where B.DB_SCHEMA_MNEM = '$Schema' AND (B_DAT_DOW <= '$IsoDate') AND ('$IsoDate' <= E_DAT_DOW) order by D.DOMEIN_MNEM, D.DOM_WAARDE_VNR" -ServerInstance $SqlServerInstance -Database $Database
 
 	# ophalen tabellen en kolommmen
 	$TableRows = Invoke-Sqlcmd "select * from RDD.DB_RECORD where DB_SCHEMA_MNEM = `'$Schema`' AND (B_DAT_DBR <= '$IsoDate') AND ('$IsoDate' <= E_DAT_DBR) order by DB_SCHEMA_MNEM, DB_REC_MNEM" -ServerInstance $SqlServerInstance -Database $Database
@@ -230,7 +224,7 @@ Function RddCollectMetaData {
 
 	Write-Host "Found $($beperkingen.count) beperkingen, $($TableRows.count) tables, $($IndexRows.count) indexes, 0 toevoegingen"
 
-	Write-Output @{ Tables = $tables; TableAliases = $table_aliases; Indexes = $indexes; IndexAliases = $index_aliases; Toevoegingen = $toevoegingen; Beperkingen = $beperkingen; Attributen = $attributenUsed; Domeimen = $domeinenUsed }
+	Write-Output @{ Tables = $tables; TableAliases = $table_aliases; Indexes = $indexes; IndexAliases = $index_aliases; Toevoegingen = $toevoegingen; Beperkingen = $beperkingen; Attributen = $attributenUsed; Domeinen = $domeinenUsed }
 }
 
 Function SqsCreateTablesHash {
@@ -244,6 +238,7 @@ Function SqsCreateTablesHash {
 		$Table | Add-Member -MemberType NoteProperty -Name "__columns" -Value @{}
 		$Table | Add-Member -MemberType NoteProperty -Name "__indexes" -Value @{}
 		$Table | Add-Member -MemberType NoteProperty -Name "__foreign_keys" -Value @{}
+		$Table | Add-Member -MemberType NoteProperty -Name "__constraints" -Value @{}
 		$Table.name = $Table.name.replace("_","-")
 		$table_lookup[$Table.'object-id'] = $Table
 		$Tables[$Table.name] = $Table
@@ -311,6 +306,21 @@ Function SqsCreateForeignKeysHash {
 	Write-Output $Fks
 }
 
+Function SqsCreateConstraintsHash {
+	Param ( $Tables, $ConstraintRows )
+
+	$Constraints = @{}
+	foreach ( $row in $ConstraintRows ) {
+		$Constraint = FillObjectDashNames -Row $Row
+		$Constraint.'TABLE-NAME' = $Constraint.'TABLE-NAME'.replace("_","-")
+		$Constraint.'CONSTRAINT-NAME' = $Constraint.'CONSTRAINT-NAME'.replace("_","-")
+		$key = "$($Constraint.'TABLE-NAME')@$($Constraint.'CONSTRAINT-NAME')"
+		$Constraints[$key] = $Constraint
+		$Tables[$Constraint.'TABLE-NAME'].__constraints[$Constraint.'CONSTRAINT-NAME'] = $Constraint
+	}
+	Write-Output $Constraints
+}
+
 Function SqsCollectMetaData {
 	Param(
 		$Schema, $SqlServerInstance, $Database
@@ -318,6 +328,7 @@ Function SqsCollectMetaData {
 	Write-Host "** Querying Physical Sql Server for SQL schema $Schema"
 	$TableRows = Invoke-Sqlcmd "select * from sys.tables where schema_name(schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
 	$ColumnRows = Invoke-Sqlcmd "SELECT t.name as TABLE_NAME, ty.name as COLUMN_TYPE, c.* FROM sys.columns c JOIN sys.tables t ON (t.object_id = c.object_id) JOIN sys.types ty on ty.system_type_id = c.system_type_id where schema_name(t.schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
+	$ConstraintRows = Invoke-Sqlcmd "select OBJECT_NAME(parent_object_id) as TABLE_NAME, name AS CONSTRAINT_NAME, * from sys.check_constraints where SCHEMA_NAME(schema_id) = '$SqlSchema'"  -ServerInstance $SqlServerInstance -Database $SqlDatabase
 	$IndexRows = Invoke-Sqlcmd "select i.*, t.name as TABLE_NAME from sys.indexes i inner join sys.tables t on i.object_id = t.object_id where schema_name(t.schema_id) = '$SqlSchema'" -ServerInstance $SqlServerInstance -Database $SqlDatabase
 	$IndexColumnRows =  Invoke-Sqlcmd "select t.name as TABLE_NAME, i.name as INDEX_NAME, tc.name as COLUMN_NAME, ic.* from sys.index_columns ic inner join sys.indexes i ON (i.object_id = ic.object_id and i.index_id = ic.index_id) inner join sys.tables t on (i.object_id = t.object_id) inner join sys.columns tc on ic.column_id = tc.column_id and ic.object_id = tc.object_id where schema_name(t.schema_id) = '$SqlSchema' order by t.name, i.name, index_column_id" -ServerInstance $SqlServerInstance -Database $Database
 	$FkRows = Invoke-Sqlcmd  "select t.name as TABLE_NAME, fk.name as FOREIGN_KEY_NAME, fk.* from sys.foreign_keys fk join sys.tables t on (fk.parent_object_id = t.object_id) where schema_name(t.schema_id) = '$SqlSchema'"  -ServerInstance $SqlServerInstance -Database $Database
@@ -330,13 +341,14 @@ Function SqsCollectMetaData {
 
 	Write-Host "Building SQS Tables structure"
 	$Tables = SqsCreateTablesHash -TableRows $TableRows -ColumnRows $ColumnRows
+	Write-Host "Building SQS Constraints structure"
+	$Constraints = SqsCreateConstraintsHash -Tables $Tables -ConstraintRows $ConstraintRows
 	Write-Host "Building SQS Indexes structure"
 	$indexes = SqsCreateIndexesHash -IndexRows $IndexRows -ColumnRows $IndexColumnRows -Tables $tables
-
 	$ForeignKeys = SqsCreateForeignKeysHash -FkRows $FkRows -FkColumnRows $FkColumnRows
 
 	Write-Host "Found $($TableRows.count) tables, $($IndexRows.count) indexes"
-	Write-Output  @{ Tables = $Tables; Indexes = $Indexes; ForeignKeys = $ForeignKeys };
+	Write-Output  @{ Tables = $Tables; Indexes = $Indexes; ForeignKeys = $ForeignKeys; Constraints = $Constraints };
 }
 
 # returns a typestring (RDD formatted) for a column
@@ -356,7 +368,7 @@ Function GetRddTypeString {
 	if ( $base.Equals('INT') -and $sql_column.'is-identity') {
 		$base = "INT IDENTITY"
 	}
-	
+
 	# nvarchar size is 2x too big, NVARCHAR is always stored in two bytes,
 	# except when NVARCHAR is -1. Divide it by 2 to get original declaration size
 	if ( $base.Equals('NVARCHAR') -and ($size -ne -1)  ) {
@@ -501,7 +513,7 @@ Function SqsCompareNormalIndex {
 
 	# create arrays with columns sorted in the order specifed by the index
 	# using the @{} ensures that when no columns are found an empty array is returned (damn you powershell)
-	# the getenumerator converts the hashes to on object where there the actual object 
+	# the getenumerator converts the hashes to on object where there the actual object
 	# in the hash is put behind a property Value
 	# so accessing member of the object is done by $array[0].Value.Yourproperty
 	$sqs_columns = @($sqsIndex.__columns.GetEnumerator() | Sort-Object { $_.Value.'key-ordinal' })
@@ -532,15 +544,42 @@ Function SqsCompareNormalIndex {
 
 Function SqsCompareFkIndex {
 	Param ( $rddIndex, $sqsIndex )
-}
 
+	$sqs_columns = @($sqsIndex.__columns.GetEnumerator() | Sort-Object { $_.Value.'constraint-column-id' })
+	$rdd_columns = @($rddIndex.__columns.GetEnumerator() | Sort-Object { $_.Value.'ITEM_VNR_SLEUT' })
+
+	$max = ($sqs_columns.count , $rdd_columns.count | Measure-Object -Maximum).Maximum
+
+	for ( $i = 0; $i -lt $max; $i++ ) {
+		if ( $i -ge $sqs_columns.count ) {
+			# verschil aantal kolommen, rdd heeft er meer dan sqs
+			Write-Host "Column $($rdd_columns[$i].Value.'ITEM_INT_MNEM') of fk $($rddIndex.'DB_SLEUT_NAAM') of table $($rddIndex[$i].'DB_REC_MNEM') is in the RDD but missing in the Physical database"
+		} else {
+			if ( $i -ge $rdd_columns.count ) {
+				# verschil aantal kolommen, sqs heeft er meer dan rdd
+				Write-Host "Column $($sqs_columns[$i].Value.'CONSTRAINT-COLUMN-NAME') of fk $($sqs_columns[$i].Value.'FOREIGN-KEY-NAME') of table $($sqs_columns[$i].Value.'TABLE-NAME') is in the Physical database but missing in the RDD"
+			} else {
+				$rdd_column = $rdd_columns[$i]
+				$sqs_column = $sqs_columns[$i]
+				# vergelijk de twee kolommen met elkaar
+				if ( $rdd_column.Value.'ITEM_INT_MNEM'.Equals($sqs_column.Value.'CONSTRAINT-COLUMN-NAME') ) {
+					if ( !$rdd_column.Value.'ITEM_MNEM_OWN'.Equals($sqs_column.Value.'REFERENCED-COLUMN-NAME') ) {
+						Write-Host "Column $($sqs_column.Value.'CONSTRAINT-COLUMN-NAME') of index $($sqs_column.Value.'FOREIGN-KEY-NAME') of table $($sqs_column.Value.'TABLE-NAME') in the Physical database references a different Column than $($rdd_column.Value.'ITEM_MNEM_OWN') in the RDD"
+					}
+				} else {
+					Write-Host "Column $($sqs_column.Value.'CONSTRAINT-COLUMN-NAME') of index $($sqs_column.Value.'FOREIGN-KEY-NAME') of table $($sqs_column.Value.'TABLE-NAME') in the Physical database differs from the Column $($rdd_column.Value.'ITEM_INT_MNEM') in the RDD"
+				}
+			}
+		}
+	}
+}
 
 Function SqsCompareIndexes {
 	Param( $rdd, $sqs )
 
 	# PK, CK en IX  wordt gevonden in de sys.indexes
 	# PK (Primary KEY)
-	# CK is index met unique contraints (CANDIDATE KEY), 
+	# CK is index met unique contraints (CANDIDATE KEY),
 	# IX is alleen index
 	# FK komt sys.foreign_keys
 	# BK alleen gebruikt bij Oracle database
@@ -604,9 +643,98 @@ Function SqsCompareIndexes {
 	}
 }
 
+Function RddConstructBeperkingString {
+	Param ( $rddConstraint, $rddDomein )
+
+	$column_name = $rddConstraint.ITEM_INT_MNEM.Replace("-","_")
+	if ( [string]::IsNullOrEmpty($rddDomein.DOM_RANGE_EIND ) ) {
+		# enkelvoudige waarde
+		Write-Output "[$column_name]='$($rddDomein.DOM_WAARDE)'"
+	} else {
+		Write-Output "([$column_name]>='$($rddDomein.DOM_WAARDE)' AND [$column_name]<='$($rddDomein.DOM_RANGE_EIND)')"
+	}
+}
+
+# deze functie converteert een reeks van domeinen naar een constraint string sql
+# domeinen is een lijst van domein objecten
+# een domein is enkelvoudige waarden of range (onderwaarde <= x <= bovenwaarde)
+# deze kunnen theoretisch in dezelfde domein definitie voorkomen
+# ben niet heel happy met onderstaande functie mbt haakjes, rdd lijkt op dit vlak niet consistent, dit werkt voor nu...
+Function RddConstructBeperkingenString {
+	Param ( $rddColumn, $rddConstraint, $rdd )
+
+
+	$rddAttribuut = $rdd.Attributen[$rddConstraint.ITEM_INT_MNEM]
+
+	# RDD genereert de constraints in reverse order, dus dan maar ook zo sorteren.
+	$rddDomeinen = $rdd.Domeinen[$rddAttribuut.DOMEIN_ATT] | Sort-Object { $_.DOM_WAARDE_VNR } -Descending
+
+	# de manier he het nu syntactisch staat in de sql servers is niet ok
+	# er staan nu strings als ([ATT_GEBR_CO_IND] IS NULL OR ([ATT_GEBR_CO_IND]='N' OR [ATT_GEBR_CO_IND]='J'))
+	# de haakjes om de OR zijn onzin
+	$Constraint = $($rddDomeinen | ForEach-Object { RddConstructBeperkingString -rddDomein $_ -rddConstraint $rddConstraint }) -join " OR "
+
+	# in het geval van 1 domeinwaarde met een bereik dan zitten er al haakjes omheen
+	# dan geen haakjes toevoegen, in alle andere gevallen wel
+	if ( $rdd.Domeinen[$rddAttribuut.DOMEIN_ATT].count -gt 1 -or !$Constraint.StartsWith("(") ) {
+		$Constraint = "($Constraint)"
+	}
+
+	if ( $rddColumn.'DATA_ITEM_AANW'.Equals("N") ) {
+		$Constraint = "([$($rddConstraint.ITEM_INT_MNEM.Replace("-","_"))] IS NULL OR $Constraint)"
+	}
+
+	Write-Output $Constraint
+}
+
+Function SqsCompareConstraint {
+	Param( $rddConstraint, $sqsConstraint, $rdd )
+
+	if ( ![string]::IsNullOrEmpty($rddConstraint.BEPERK_TEKST) ) {
+		if ( !$rddConstraint.BEPERK_TEKST.Equals($sqsConstraint.definition)) {
+			Write-Host "Constraint $($sqsConstraint.'CONSTRAINT-NAME') on table $($sqsConstraint.'TABLE-NAME') differs from RDD BEPERK_TEKST"
+			Write-Host "SQS: $($sqsConstraint.'definition')"
+			Write-Host "RDD: $($rddConstraint.BEPERK_TEKST)"
+		}
+	} else {
+		# Beperkt tekst is leeg, construeer de beperking vanuit de domeinentabel, door via attributen naar de domeinen te gaan
+		# reverse order sorteren want zo genereert rdd de teksten...
+		$rddColumn = $rdd.Tables[$rddConstraint.DB_REC_MNEM].__columns[$rddConstraint.ITEM_INT_MNEM]
+							
+
+		$rddBeperkingTekst = RddConstructBeperkingenString -rddColumn $rddColumn -rddConstraint $rddConstraint -rdd $rdd
+		
+		if ( !$rddBeperkingTekst.Equals($sqsConstraint.definition) ) {
+			Write-Host "Constraint $($sqsConstraint.'CONSTRAINT-NAME') on table $($sqsConstraint.'TABLE-NAME') differs from RDD DOMEIN"
+			Write-Host "SQS: $($sqsConstraint.'definition')"
+			Write-Host "RDD: $rddBeperkingTekst"
+		}
+	}
+}
+
+Function SqsCompareConstraints {
+	Param( $rdd, $sqs )
+
+	foreach ( $rddkey in $rdd.Beperkingen.keys ) {
+		$rddConstraint = $rdd.Beperkingen[$rddkey]
+		$rddTable = $rdd.Tables[$rddConstraint.'DB_REC_MNEM']
+
+		$sqstable = FindItemWithAlias -hash $sqs.Tables -key $rddTable.DB_REC_MNEM -aliaskey $rddtable.DB_REC_ALIAS
+		if ( ![string]::IsNullOrEmpty($sqstable) ) {
+			# I expect Constraint aliases, so already prepared for it, for now the aliaskey is $null
+			$sqsConstraint  = FindItemWithAlias -hash $sqstable.__constraints  -key $rddConstraint.BEPERK_IDENT -aliaskey $null
+			if ( ![string]::IsNullOrEmpty($sqsConstraint) ) {
+				SqsCompareConstraint -rddConstraint $rddConstraint -sqsConstraint $sqsConstraint -rdd $rdd
+			}
+		} else {
+			# table not found -> ignore, is detected by compare tables
+		}
+	}
+}
+
 Function CompareSqsWithRddSchema {
 	Param (
-	$RddServerInstance, 
+	$RddServerInstance,
 	$RddDatabase,
 	$RddSchema,
 	$SqlServerInstance,
@@ -614,16 +742,15 @@ Function CompareSqsWithRddSchema {
 	$SqlSchema
 	)
 
-
 	Write-Host "Comparing RDD in $RddServerInstance, Database $RddDatabase, RDD Schema $RddSchema"
 	Write-Host "With SQL Server $SqlServerInstance, Database $SqlDatabase, SQL Schema $SqlSchema"
-	$global:sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase
-	$global:rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
+#	$global:sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase
+#	$global:rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
 
 	SqsCompareTables -rdd $global:rdd -sqs $global:sqs
 	SqsCompareIndexes -rdd $global:rdd -sqs $global:sqs
+	SqsCompareConstraints -rdd $global:rdd -sqs $global:sqs
 }
-
 
 CompareSqsWithRddSchema -RddServerInstance "LOCALHOST\SQLEXPRESS" -RddDatabase "RDDDB" -RddSchema "OTP-PD-RDD-SQS" -SqlServerInstance "LOCALHOST\SQLEXPRESS" -SqlDatabase "RDDDB" -SqlSchema "RDD"
 #CompareSqsWithRddSchema -RddServerInstance "LOCALHOST\SQLEXPRESS" -RddDatabase "RDDDB" -RddSchema "OTP-ON-BKR-WFR" -SqlServerInstance "LOCALHOST\SQLEXPRESS" -SqlDatabase "RDDDB" -SqlSchema "RDD"
