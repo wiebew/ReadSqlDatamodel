@@ -1,13 +1,13 @@
-﻿##### TODO (Kwlaitatief)
+﻿##### TODO (Kwalitatief)
 ##### - Ombouwen naar cmdlets
 ##### - Unit testen
 ##### TODO (Functioneel)
 ##### Feature 1, sluitende administratie RDD met fysieke databases hierdoor heb je de preconditie datde databases identiek zijn en de startsituatie over al gelijk
-##### - Met DBA uitzoeken wanneer je nu wel of niet een IS NULL moet teovoegen aan de constraint. is nu niet consistent te krijgen.
+##### - Met DBA uitzoeken wanneer je nu wel of niet een IS NULL moet toevoegen aan de constraint. is nu niet consistent te krijgen.
 ##### - Write-Host vervangen door een json construct waardoor er een machine leesbare delta uit deze stap komt
 #####   Deze delta kan je dan inlezen om rapport mee te maken of Scripts mee uit voeren
 ##### Feature 2, Detecteren van changes in RDD en het automatisch kunnen updaten van een database
-##### - maken script met als resultaar een json oid die deze verschillen (delta) bevat (dus toevoegen van een extra kolom op een winframe database, zie je terug als een item in de json)
+##### - maken script met als resultaat een json oid die deze verschillen (delta) bevat (dus toevoegen van een extra kolom op een winframe database, zie je terug als een item in de json)
 ##### - maken van een interface waardoor er migrations obv bovenstaande delta komen die gensapt worden door het .Net core EF (idee Robert)
 ##### - Release definitie maken waarmee changes op databases via Rel Mgr uitgerold kunnen worden.
 
@@ -408,6 +408,9 @@ Function SqsCompareColumns {
 	if (($rdd_column.'DATA_ITEM_AANW' -eq "J") -ne !($sql_column.'is-nullable')) {
 		Write-Host "$($sql_column.'TABLE-NAME').$($sql_column.name) Different non nullable setting: DATA_ITEM_AANW=$($rdd_column.'DATA_ITEM_AANW') expected, found is_nullable = $(($sql_column.'is-nullable')) in the database"
 	}
+	if (($rdd_column.'DATA_ITEM_AANW' -eq "N") -ne ($sql_column.'is-nullable')) {
+		Write-Host "$($sql_column.'TABLE-NAME').$($sql_column.name) Different non nullable setting: DATA_ITEM_AANW=$($rdd_column.'DATA_ITEM_AANW') expected, found is_nullable = $(($sql_column.'is-nullable')) in the database"
+	}
 }
 
 # searches for an item in the hash on the $key, if not found
@@ -744,8 +747,8 @@ Function CompareSqsWithRddSchema {
 
 	Write-Host "Comparing RDD in $RddServerInstance, Database $RddDatabase, RDD Schema $RddSchema"
 	Write-Host "With SQL Server $SqlServerInstance, Database $SqlDatabase, SQL Schema $SqlSchema"
-#	$global:sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase
-#	$global:rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
+	$global:sqs = SqsCollectMetaData -Schema $SqlSchema -SqlServerInstance $SqlServerInstance -Database $SqlDatabase
+	$global:rdd = RddCollectMetaData -Schema $RddSchema -SqlServerInstance $RddServerInstance -Database $RddDatabase -DateStamp $(Get-Date)
 
 	SqsCompareTables -rdd $global:rdd -sqs $global:sqs
 	SqsCompareIndexes -rdd $global:rdd -sqs $global:sqs
