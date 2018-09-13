@@ -683,10 +683,6 @@ Function RddConstructBeperkingenString {
 		$Constraint = "($Constraint)"
 	}
 
-	if ( $rddColumn.'DATA_ITEM_AANW'.Equals("N") ) {
-		$Constraint = "([$($rddConstraint.ITEM_INT_MNEM.Replace("-","_"))] IS NULL OR $Constraint)"
-	}
-
 	Write-Output $Constraint
 }
 
